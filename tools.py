@@ -21,6 +21,8 @@ from utils.data_loader import load_listings
 
 load_dotenv()
 
+LLM_MODEL = "llama-3.3-70b-versatile"
+
 
 # ── Groq client ───────────────────────────────────────────────────────────────
 
@@ -69,8 +71,38 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    all_listings = load_listings()
+
+    # Step 1: Filter by max_price and size
+    filtered = []
+    for listing in all_listings:
+        if max_price is not None and listing['price'] > max_price:
+            continue
+        if size is not None and size.upper() not in listing['size'].upper():
+            continue
+        filtered.append(listing)
+
+    # Step 2-3: Score by keyword overlap with description
+    keywords = set(description.lower().split())
+    scored = []
+
+    for listing in filtered:
+        searchable_text = ' '.join([
+            listing['title'],
+            listing['description'],
+            ' '.join(listing['style_tags']),
+            listing['category']
+        ]).lower()
+
+        searchable_words = set(searchable_text.split())
+        score = len(keywords & searchable_words)
+
+        if score > 0:
+            scored.append((listing, score))
+
+    # Step 4-5: Sort by score descending and return top 3
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [listing for listing, score in scored[:3]]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
@@ -100,8 +132,47 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    client = _get_groq_client()
+
+    if not wardrobe['items']:
+        # Empty wardrobe: offer general styling advice
+        prompt = f"""Given this clothing item, suggest general styling ideas.
+
+Item: {new_item['title']}
+Description: {new_item['description']}
+Style tags: {', '.join(new_item['style_tags'])}
+Category: {new_item['category']}
+Colors: {', '.join(new_item['colors'])}
+
+Suggest what kinds of pieces pair well with this item, what vibe it suits, and brief styling tips. Keep it casual and concise (2-3 sentences)."""
+    else:
+        # Non-empty wardrobe: suggest specific outfit combinations
+        wardrobe_items_str = "\n".join([
+            f"- {item['name']} ({item['category']}, {', '.join(item['colors'])})"
+            for item in wardrobe['items']
+        ])
+
+        prompt = f"""Given this new clothing item and the user's existing wardrobe, suggest 1-2 complete outfit combinations.
+
+NEW ITEM:
+- {new_item['title']}
+- Description: {new_item['description']}
+- Style tags: {', '.join(new_item['style_tags'])}
+- Category: {new_item['category']}
+- Colors: {', '.join(new_item['colors'])}
+
+USER'S WARDROBE:
+{wardrobe_items_str}
+
+For each outfit combination, mention specific wardrobe item names and explain why they work together. Keep it casual and concise."""
+
+    response = client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=500,
+    )
+
+    return response.choices[0].message.content
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
@@ -133,5 +204,35 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    if not outfit or not outfit.strip():
+        return "Unable to generate fit card: outfit data is missing or incomplete."
+
+    client = _get_groq_client()
+
+    prompt = f"""Write a 2-4 sentence Instagram/TikTok outfit caption for this thrifted find.
+
+ITEM DETAILS:
+- Name: {new_item['title']}
+- Price: ${new_item['price']}
+- Platform: {new_item['platform']}
+- Description: {new_item['description']}
+
+OUTFIT SUGGESTION:
+{outfit}
+
+Write a casual, authentic OOTD (Outfit of the Day) caption that:
+1. Mentions the item name, price ($), and platform naturally — once each, like a real post
+2. Captures the outfit vibe in specific terms
+3. Feels casual and authentic, not like a product description
+4. Is 2-4 sentences total
+
+Write just the caption, no extra explanation."""
+
+    response = client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=200,
+        temperature=1.0,
+    )
+
+    return response.choices[0].message.content
